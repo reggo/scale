@@ -3,10 +3,12 @@ package scale
 import (
 	"encoding/gob"
 	"errors"
-	"github.com/gonum/floats"
 	"math"
 
 	"github.com/reggo/common"
+
+	"github.com/gonum/floats"
+	"github.com/gonum/matrix/mat64"
 )
 
 func init() {
@@ -43,11 +45,11 @@ func (u UnequalLength) Error() string {
 // some of the data have unequal lengths or if less than two data points are
 // entered
 type Scaler interface {
-	Scale(point []float64) error     // Scales (in place) the data point
-	Unscale(point []float64) error   // Unscales (in place) the data point
-	IsScaled() bool                  // Returns true if the scale for this type has already been set
-	Dimensions() int                 //Number of dimensions for wihich the data was scaled
-	SetScale(data [][]float64) error // Uses the input data to set the scale
+	Scale(point []float64) error      // Scales (in place) the data point
+	Unscale(point []float64) error    // Unscales (in place) the data point
+	IsScaled() bool                   // Returns true if the scale for this type has already been set
+	Dimensions() int                  //Number of dimensions for wihich the data was scaled
+	SetScale(data *mat64.Dense) error // Uses the input data to set the scale
 }
 
 // ScaleData scales every point in the data using the scaler
