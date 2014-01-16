@@ -3,11 +3,12 @@ package scale
 import (
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"math"
+	"sync"
 
 	"github.com/reggo/common"
 
-	"github.com/gonum/floats"
 	"github.com/gonum/matrix/mat64"
 )
 
@@ -15,12 +16,12 @@ func init() {
 	gob.Register(&None{})
 	gob.Register(&Linear{})
 	gob.Register(&Normal{})
-	gob.Register(&Probability{})
+	//gob.Register(&Probability{})
 
 	common.Register(&None{})
 	common.Register(&Linear{})
 	common.Register(&Normal{})
-	common.Register(&Probability{})
+	//common.Register(&Probability{})
 }
 
 // IdenticalDimensions is an error type expressing that
@@ -52,42 +53,67 @@ type Scaler interface {
 	SetScale(data *mat64.Dense) error // Uses the input data to set the scale
 }
 
-// ScaleData scales every point in the data using the scaler
-func ScaleData(scaler Scaler, data [][]float64) error {
-	if len(data) == 0 {
-		return nil
-	}
-	for _, point := range data {
-		err := scaler.Scale(point)
-		if err != nil {
-			return err
+type SliceError struct {
+	Header string
+	Idx    int
+	Err    error
+}
+
+func (s *SliceError) Error() string {
+	return fmt.Sprintf("%v: element %v, error %v", s.Header, s.Idx, s.Err)
+}
+
+type ErrorList []*SliceError
+
+func (e ErrorList) Error() string {
+	return fmt.Sprintf("%v errors found", len(e))
+}
+
+// ScaleData is a wrapper for scaling data in parallel.
+func ScaleData(scaler Scaler, data *mat64.Dense) error {
+	m := &sync.Mutex{}
+	var e ErrorList
+	f := func(start, end int) {
+		for r := start; r < end; r++ {
+			errTmp := scaler.Scale(data.RowView(r))
+			if errTmp != nil {
+				m.Lock()
+				e = append(e, &SliceError{Header: "scale", Idx: r, Err: errTmp})
+				m.Unlock()
+			}
 		}
+	}
+
+	nSamples, _ := data.Dims()
+	grain := common.GetGrainSize(nSamples, 1, 500)
+	common.ParallelFor(nSamples, grain, f)
+
+	if len(e) != 0 {
+		return e
 	}
 	return nil
 }
 
-// UnscaleData scales every point in the data using the scalar
-func UnscaleData(scaler Scaler, data [][]float64) error {
-	if len(data) == 0 {
-		return nil
-	}
-	for _, point := range data {
-		err := scaler.Unscale(point)
-		if err != nil {
-			return err
+// UnscaleData is a wrapper for unscaling data in parallel.
+func UnscaleData(scaler Scaler, data *mat64.Dense) error {
+	m := &sync.Mutex{}
+	var e ErrorList
+	f := func(start, end int) {
+		for r := start; r < end; r++ {
+			errTmp := scaler.Unscale(data.RowView(r))
+			if errTmp != nil {
+				m.Lock()
+				e = append(e, &SliceError{Header: "scale", Idx: r, Err: errTmp})
+				m.Unlock()
+			}
 		}
 	}
-	return nil
-}
 
-// checkInputs checks the inputs to make sure they all have
-// equal length and that there are at least two inputs
-func checkInputs(data [][]float64) error {
-	if !floats.EqualLengths(data...) {
-		return UnequalLength{}
-	}
-	if len(data) < 2 {
-		return errors.New("LessThanTwoInputs")
+	nSamples, _ := data.Dims()
+	grain := common.GetGrainSize(nSamples, 1, 500)
+	common.ParallelFor(nSamples, grain, f)
+	if len(e) != 0 {
+		return e
 	}
 	return nil
 }
@@ -114,12 +140,13 @@ func (n None) Dimensions() int {
 	return n.Dim
 }
 
-func (n *None) SetScale(data [][]float64) error {
-	err := checkInputs(data)
-	if err != nil {
-		return err
+func (n *None) SetScale(data *mat64.Dense) error {
+	rows, cols := data.Dims()
+	if rows < 2 {
+		return errors.New("scale: less than two inputs")
 	}
-	n.Dim = len(data[0])
+
+	n.Dim = cols
 	n.Scaled = true
 	return nil
 }
@@ -146,14 +173,12 @@ func (l *Linear) Dimensions() int {
 // points. If the minimum and maximum value are identical in
 // a dimension, the minimum and maximum values will be set to
 // that value +/- 0.5 and a
-func (l *Linear) SetScale(data [][]float64) error {
+func (l *Linear) SetScale(data *mat64.Dense) error {
 
-	err := checkInputs(data)
-	if err != nil {
-		return err
+	rows, dim := data.Dims()
+	if rows < 2 {
+		return errors.New("scale: less than two inputs")
 	}
-
-	dim := len(data[0])
 
 	// Generate data for min and max if they don't already exist
 	if len(l.Min) < dim {
@@ -173,13 +198,14 @@ func (l *Linear) SetScale(data [][]float64) error {
 		l.Max[i] = math.Inf(-1)
 	}
 	// Find the minimum and maximum in each dimension
-	for _, point := range data {
-		for i, val := range point {
-			if val < l.Min[i] {
-				l.Min[i] = val
+	for i := 0; i < rows; i++ {
+		for j := 0; j < dim; j++ {
+			val := data.At(i, j)
+			if val < l.Min[j] {
+				l.Min[j] = val
 			}
-			if val > l.Max[i] {
-				l.Max[i] = val
+			if val > l.Max[j] {
+				l.Max[j] = val
 			}
 		}
 	}
@@ -250,34 +276,34 @@ func (n *Normal) Dimensions() int {
 // the data is zero (all of the entries have the same value),
 // the standard deviation is set to 1.0 and a UniformDimension error is
 // returned
-func (n *Normal) SetScale(data [][]float64) error {
+func (n *Normal) SetScale(data *mat64.Dense) error {
 
-	err := checkInputs(data)
-	if err != nil {
-		return err
+	rows, dim := data.Dims()
+	if rows < 2 {
+		return errors.New("scale: less than two inputs")
 	}
 
 	// Need to find the mean input and the std of the input
-	dim := len(data[0])
 	mean := make([]float64, dim)
-	for _, samp := range data {
-		for i, val := range samp {
-			mean[i] += val
+	for i := 0; i < rows; i++ {
+		for j := 0; j < dim; j++ {
+			mean[j] += data.At(i, j)
 		}
 	}
 	for i := range mean {
-		mean[i] /= float64(len(data))
+		mean[i] /= float64(rows)
 	}
 
+	// TODO: Replace this with something that has better numerical properties
 	std := make([]float64, dim)
-	for _, samp := range data {
-		for i, val := range samp {
-			diff := val - mean[i]
-			std[i] += diff * diff
+	for i := 0; i < rows; i++ {
+		for j := 0; j < dim; j++ {
+			diff := data.At(i, j) - mean[j]
+			std[j] += diff * diff
 		}
 	}
 	for i := range std {
-		std[i] /= float64(len(data))
+		std[i] /= float64(rows)
 		std[i] = math.Sqrt(std[i])
 	}
 	n.Scaled = true
@@ -324,6 +350,7 @@ func (n *Normal) Unscale(point []float64) error {
 	return nil
 }
 
+/*
 type ProbabilityDistribution interface {
 	Fit([]float64) error
 	CumProb(float64) float64
@@ -350,7 +377,7 @@ func (p *Probability) Dimensions() int {
 	return p.Dim
 }
 
-func (p *Probability) SetScale(data [][]float64) error {
+func (p *Probability) SetScale(data *mat64.Dense) error {
 	err := checkInputs(data)
 	if err != nil {
 		return err
@@ -410,3 +437,4 @@ func (p *Probability) Unscale(point []float64) error {
 	}
 	return nil
 }
+*/

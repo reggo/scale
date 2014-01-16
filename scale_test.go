@@ -3,19 +3,30 @@ package scale
 import (
 	"bytes"
 	"encoding/gob"
-	"github.com/gonum/floats"
 	"math"
+	"reflect"
 	"testing"
 
-	"fmt"
-	"reflect"
+	"github.com/gonum/floats"
+	"github.com/gonum/matrix/mat64"
 )
 
+func flatten(data [][]float64) *mat64.Dense {
+	nSamples := len(data)
+	nDim := len(data[0])
+	mat := mat64.NewDense(nSamples, nDim, nil)
+	for i := range data {
+		if len(data[i]) != nDim {
+			panic("bad flatten")
+		}
+		for j := range data[i] {
+			mat.Set(i, j, data[i][j])
+		}
+	}
+	return mat
+}
+
 func testGob(s Scaler, sdecode Scaler, t *testing.T) {
-
-	fmt.Println("sdecode pre")
-	fmt.Println(sdecode)
-
 	w := new(bytes.Buffer)
 	encoder := gob.NewEncoder(w)
 	err := encoder.Encode(s)
@@ -30,11 +41,6 @@ func testGob(s Scaler, sdecode Scaler, t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	fmt.Println("s")
-	fmt.Println(s)
-	fmt.Println("sdecode")
-	fmt.Println(sdecode)
 	isequal := reflect.DeepEqual(s, sdecode)
 	if !isequal {
 		t.Errorf("reflect DeepEqual doesn't match")
@@ -43,39 +49,48 @@ func testGob(s Scaler, sdecode Scaler, t *testing.T) {
 
 // TODO: Add in more tests for bad inputs
 
-func testScaling(t *testing.T, u Scaler, data [][]float64, scaledData [][]float64, name string) {
-
+func testScaling(t *testing.T, u Scaler, data *mat64.Dense, scaledData *mat64.Dense, name string) {
 	// Copy data
-	origData := make([][]float64, len(data))
-	for i := range origData {
-		origData[i] = make([]float64, len(data[i]))
-		copy(origData[i], data[i])
+
+	r, c := data.Dims()
+	origData := mat64.NewDense(r, c, nil)
+	for i := 0; i < r; i++ {
+		for j := 0; j < c; j++ {
+			origData.Set(i, j, data.At(i, j))
+		}
 	}
 
 	err := ScaleData(u, data)
 	if err != nil {
 		t.Errorf("Error found in ScaleData for case " + name + ": " + err.Error())
 	}
-	for i := range data {
-		if !floats.EqualApprox(data[i], scaledData[i], 1e-14) {
-			t.Errorf("Improper scaling for case"+name+". Expected: %v, Found: %v", data[i], scaledData[i])
+	/*
+		for i := range data {
+			if !floats.EqualApprox(data[i], scaledData[i], 1e-14) {
+				t.Errorf("Improper scaling for case"+name+". Expected: %v, Found: %v", data[i], scaledData[i])
+			}
 		}
+	*/
+
+	if !data.EqualsApprox(scaledData, 1e-14) {
+		t.Errorf("Improper scaling for case"+name+". Expected: %v, Found: %v", scaledData, data)
 	}
+
 	err = UnscaleData(u, data)
 	if err != nil {
 		t.Errorf("Error found in UnscaleData for case " + name + ": " + err.Error())
 	}
-	for i := range data {
-		if !floats.EqualApprox(data[i], origData[i], 1e-14) {
-			t.Errorf("Improper unscaling for case"+name+". Expected: %v, Found: %v", data[i], scaledData[i])
-		}
+
+	if !data.EqualsApprox(origData, 1e-14) {
+		t.Errorf("Improper unscaling for case"+name+". Expected: %v, Found: %v", origData, data)
 	}
 }
 
 func testLinear(t *testing.T, kind linearTest) {
 	u := &Linear{}
-	fmt.Println("In test linear")
-	err := u.SetScale(kind.data)
+
+	data := flatten(kind.data)
+	err := u.SetScale(data)
 
 	if err != nil {
 		if kind.eqDim != true {
@@ -88,7 +103,8 @@ func testLinear(t *testing.T, kind linearTest) {
 	if !floats.EqualApprox(u.Max, kind.max, 1e-14) {
 		t.Errorf("Max doesn't match for case " + kind.name)
 	}
-	testScaling(t, u, kind.data, kind.scaledData, kind.name)
+	scaledData := flatten(kind.scaledData)
+	testScaling(t, u, data, scaledData, kind.name)
 	u2 := &Linear{}
 	testGob(u, u2, t)
 }
@@ -173,7 +189,8 @@ type normalTest struct {
 
 func testNormal(t *testing.T, kind normalTest) {
 	u := &Normal{}
-	err := u.SetScale(kind.data)
+	data := flatten(kind.data)
+	err := u.SetScale(data)
 
 	if err != nil {
 		if kind.eqDim != true {
@@ -186,7 +203,8 @@ func testNormal(t *testing.T, kind normalTest) {
 	if !floats.EqualApprox(u.Sigma, kind.sigma, 1e-14) {
 		t.Errorf("Sigma doesn't match for case "+kind.name+". Expected: %v, Found: %v", kind.sigma, u.Sigma)
 	}
-	testScaling(t, u, kind.data, kind.scaledData, kind.name)
+	scaledData := flatten(kind.scaledData)
+	testScaling(t, u, data, scaledData, kind.name)
 
 	u2 := &Normal{}
 	testGob(u, u2, t)
@@ -254,6 +272,7 @@ func TestNormal(t *testing.T) {
 	}
 }
 
+/*
 type probabilityTest struct {
 	data         [][]float64
 	unscaledDist []ProbabilityDistribution
