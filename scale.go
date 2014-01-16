@@ -24,6 +24,10 @@ func init() {
 	//common.Register(&Probability{})
 }
 
+// TODO: Check that scalers don't set IsScaled if there is an error, and add
+// comment about the behavior
+// TODO: Add comment that it is assumed if data can be scaled, it can also be unscaled without error
+
 // IdenticalDimensions is an error type expressing that
 // a dimension all had equal values. Dims is a list of unequal dimensions
 type UniformDimension struct {
@@ -70,6 +74,7 @@ func (e ErrorList) Error() string {
 }
 
 // ScaleData is a wrapper for scaling data in parallel.
+// TODO: Make this work better so that if there is an error somewhere data isn't changed
 func ScaleData(scaler Scaler, data *mat64.Dense) error {
 	m := &sync.Mutex{}
 	var e ErrorList
@@ -95,6 +100,7 @@ func ScaleData(scaler Scaler, data *mat64.Dense) error {
 }
 
 // UnscaleData is a wrapper for unscaling data in parallel.
+// TODO: Make this work better so that if there is an error somewhere data isn't changed
 func UnscaleData(scaler Scaler, data *mat64.Dense) error {
 	m := &sync.Mutex{}
 	var e ErrorList
@@ -115,6 +121,42 @@ func UnscaleData(scaler Scaler, data *mat64.Dense) error {
 	if len(e) != 0 {
 		return e
 	}
+	return nil
+}
+
+// ScaleTrainingData sets the scale of the scalers if they are not already set
+// and then scales the data in inputs and outputs
+// TODO: Change so that if any error occurs, scaling will be undone
+// TODO: Make run concurrently
+func ScaleTrainingData(inputs, outputs *mat64.Dense, inputScaler, outputScaler Scaler) error {
+	var err error
+	if !inputScaler.IsScaled() {
+		err = inputScaler.SetScale(inputs)
+		if err != nil {
+			return err
+		}
+	}
+	if !outputScaler.IsScaled() {
+		err = outputScaler.SetScale(outputs)
+		if err != nil {
+			return err
+		}
+	}
+	err = ScaleData(inputScaler, inputs)
+	if err != nil {
+		return err
+	}
+	err = ScaleData(outputScaler, outputs)
+	if err != nil {
+		UnscaleData(inputScaler, inputs)
+		return err
+	}
+	return nil
+}
+
+func UnscaleTrainingData(inputs, outputs *mat64.Dense, inputScaler, outputScaler Scaler) error {
+	UnscaleData(inputScaler, inputs)
+	UnscaleData(outputScaler, outputs)
 	return nil
 }
 
