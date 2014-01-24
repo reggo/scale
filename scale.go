@@ -13,9 +13,9 @@ import (
 )
 
 func init() {
-	gob.Register(&None{})
-	gob.Register(&Linear{})
-	gob.Register(&Normal{})
+	gob.Register(None{})
+	gob.Register(Linear{})
+	gob.Register(Normal{})
 	//gob.Register(&Probability{})
 
 	common.Register(&None{})
